@@ -51,6 +51,81 @@ from train import training, get_params
 # Lx + SSIM
 # Lx + LPIPS
 
+def loss_optimization(trial):
+    # L1, L2, Lx + SSIM, Lx + PSIMP
+    torch.cuda.empty_cache()
+    try:
+        shutil.rmtree(f"/home/alper/Spaceport/output/Optimization_folder") # Do not change this name
+        print("Removed Optimization_folder")
+    except Exception as e:
+        print("Cannot remove optmization folder -> ", e)
+    
+    args.expname = f"Optimization_folder" # Do not change this name
+    args.loss = trial.suggest_categorical("loss", ["l1", "l2"])
+
+    args.lambda_dssim = trial.suggest_float('lambda_dssim', 0.001, 0.9)
+    # args.lambda_lpips = trial.suggest_float('lambda_lpips', 0.001, 0.9)
+
+    psnr_test_list_coarse, psnr_test_list_fine, ssim_test_list_fine = training(model_params.extract(args), model_hidden_params.extract(args), opt_params.extract(args), pipeline_params.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
+
+    gc.collect()
+    torch.cuda.empty_cache()   
+    return mean(ssim_test_list_fine[-5:])
+
+def optimize_most_effective_params(trial):
+    torch.cuda.empty_cache()
+    try:
+        shutil.rmtree(f"/home/alper/Spaceport/output/Optimization_folder") # Do not change this name
+        print("Removed Optimization_folder")
+    except Exception as e:
+        print("Cannot remove optmization folder -> ", e)
+    
+    args.expname = f"Optimization_folder" # Do not change this name
+
+    args.opacity_reset_interval = trial.suggest_int('opacity_reset_interval', 100, 5000, step=100) # default 3000
+    args.deformation_lr_init = trial.suggest_float('deformation_lr_init', 0.000016, 0.0016) # 0.00016
+    args.densify_from_iter = trial.suggest_int('densify_from_iter', 100, 5000, step=100) # 500
+    args.opacity_threshold_fine_init = trial.suggest_float('opacity_threshold_fine_init', 0.0005, 0.01) # 0.005
+    args.densify_until_iter = trial.suggest_int('densify_until_iter', 1000, 5000, step=100) # 15000
+    # args.defor_depth = trial.suggest_categorical("defor_depth", [1, 2, 4, 8, 16]) # 1
+    # args.net_width = trial.suggest_categorical("net_width", [64, 128, 256, 512])
+    # args.densify_until_iter = trial.suggest_int('densify_until_iter', 10000, 20000, step=100) # 15000
+    # args.time_smoothness_weight = trial.suggest_float('time_smoothness_weight', 0.01, 0.1) # 0.01
+    
+    try:
+        psnr_test_list_coarse, psnr_test_list_fine = training(model_params.extract(args), model_hidden_params.extract(args), opt_params.extract(args), pipeline_params.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
+    except Exception as e:
+        print("Error on Training -> ", e)
+        gc.collect()
+        torch.cuda.empty_cache()
+        return 1.2
+    
+    gc.collect()
+    torch.cuda.empty_cache()   
+    return mean(psnr_test_list_fine[-5:])
+
+def second_step_with_optimized_params(trial):
+    torch.cuda.empty_cache()
+    try:
+        shutil.rmtree(f"/home/alper/Spaceport/output/Optimization_folder") # Do not change this name
+        print("Removed Optimization_folder")
+    except Exception as e:
+        print("Cannot remove optmization folder -> ", e)
+    
+    args.expname = f"Optimization_folder" # Do not change this name
+
+    # args.net_width = trial.suggest_categorical("net_width", [64, 128, 256, 512])
+    # args.defor_depth = trial.suggest_categorical("defor_depth", [1, 2, 4, 8, 16, 64])
+    args.iterations = trial.suggest_categorical("iterations", [15000, 20000, 25000, 30000, 35000, 40000])
+    args.coarse_iterations = trial.suggest_categorical("coarse_iterations", [2000, 4000, 7000, 10000, 15000])
+    args.loss = trial.suggest_categorical("loss", ["l1", "l2"])
+    
+    psnr_test_list_coarse, psnr_test_list_fine, ssim_test_list_fine = training(model_params.extract(args), model_hidden_params.extract(args), opt_params.extract(args), pipeline_params.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return mean(ssim_test_list_fine[-5:]) # mean of the last five items (iteration results)
+
 def all_params_obj(trial):
     torch.cuda.empty_cache()
     try:
@@ -65,28 +140,25 @@ def all_params_obj(trial):
     args.deformation_lr_init = trial.suggest_float('deformation_lr_init', 0.000016, 0.0016)
     args.deformation_lr_delay_mult = trial.suggest_float('deformation_lr_delay_mult', 0.001, 0.1)
 
-    # args.no_do = trial.suggest_categorical("no_do", [True, False])
-    # args.no_ds = trial.suggest_categorical("no_ds", [True, False])
-    # args.no_dx = trial.suggest_categorical("no_dx", [True, False])
-    # args.no_dshs = trial.suggest_categorical("no_dshs", [True, False])
-
     args.net_width = trial.suggest_categorical("net_width", [64, 128, 256, 512])
     args.defor_depth = trial.suggest_categorical("defor_depth", [1, 2, 4, 8, 16, 64])
-    args.plane_tv_weight = trial.suggest_float('plane_tv_weight', 0.00001, 0.001)
-    args.time_smoothness_weight = trial.suggest_float('time_smoothness_weight', 0.001, 0.1)
-    args.l1_time_planes = trial.suggest_float('l1_time_planes', 0.00001, 0.001)
+    args.plane_tv_weight = trial.suggest_float('plane_tv_weight', 0.0001, 0.001)
+    # args.time_smoothness_weight = trial.suggest_float('time_smoothness_weight', 0.01, 0.1)
+    args.l1_time_planes = trial.suggest_float('l1_time_planes', 0.0001, 0.001)
 
-    args.densify_until_iter = trial.suggest_int('densify_until_iter', 10000, 20000)
-    args.densify_from_iter = trial.suggest_int('densify_from_iter', 500, 2000)
+    # args.densify_until_iter = trial.suggest_int('densify_until_iter', 10000, 20000)
+    # args.densify_from_iter = trial.suggest_int('densify_from_iter', 100, 5000)
+    args.densify_until_iter = trial.suggest_int('densify_until_iter', 1000, 5000, step=100) # 15000
+    args.densify_from_iter = trial.suggest_int('densify_from_iter', 100, 5000, step=100) # 500
     args.densification_interval = trial.suggest_int('densification_interval', 50, 500)
-    args.densify_grad_threshold_after = trial.suggest_float('densify_grad_threshold_after', 0.00001, 0.01)
-    args.densify_grad_threshold_fine_init = trial.suggest_float('densify_grad_threshold_fine_init', 0.00001, 0.01)
-    args.densify_grad_threshold_coarse = trial.suggest_float('densify_grad_threshold_coarse', 0.00001, 0.01)
+    args.densify_grad_threshold_after = trial.suggest_float('densify_grad_threshold_after', 0.00001, 0.1)
+    args.densify_grad_threshold_fine_init = trial.suggest_float('densify_grad_threshold_fine_init', 0.00001, 0.1)
+    args.densify_grad_threshold_coarse = trial.suggest_float('densify_grad_threshold_coarse', 0.00001, 0.1)
 
-    args.opacity_threshold_coarse = trial.suggest_float('opacity_threshold_coarse', 0.0005, 0.1)
-    args.opacity_threshold_fine_init = trial.suggest_float('opacity_threshold_fine_init', 0.0005, 0.1)
-    args.opacity_threshold_fine_after = trial.suggest_float('opacity_threshold_fine_after', 0.0005, 0.1)
-    args.opacity_reset_interval = trial.suggest_float('opacity_reset_interval', 500, 5000)
+    args.opacity_threshold_coarse = trial.suggest_float('opacity_threshold_coarse', 0.00005, 0.1)
+    args.opacity_threshold_fine_init = trial.suggest_float('opacity_threshold_fine_init', 0.00005, 0.1)
+    args.opacity_threshold_fine_after = trial.suggest_float('opacity_threshold_fine_after', 0.00005, 0.1)
+    args.opacity_reset_interval = trial.suggest_float('opacity_reset_interval', 100, 5000)
     
     psnr_test_list_coarse, psnr_test_list_fine = training(model_params.extract(args), model_hidden_params.extract(args), opt_params.extract(args), pipeline_params.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
     gc.collect()
@@ -126,14 +198,18 @@ def opacity_obj(trial):
     except Exception as e:
         print("Cannot remove optmization folder -> ", e)
         
-    args.opacity_threshold_coarse = trial.suggest_float('opacity_threshold_coarse', 0.0005, 0.1)
-    args.opacity_threshold_fine_init = trial.suggest_float('opacity_threshold_fine_init', 0.0005, 0.1)
-    args.opacity_threshold_fine_after = trial.suggest_float('opacity_threshold_fine_after', 0.0005, 0.1)
-    args.opacity_reset_interval = trial.suggest_float('opacity_reset_interval', 500, 5000)
+    args.opacity_threshold_coarse = trial.suggest_float('opacity_threshold_coarse', 0.00005, 0.1)
+    args.opacity_threshold_fine_init = trial.suggest_float('opacity_threshold_fine_init', 0.00005, 0.1)
+    args.opacity_threshold_fine_after = trial.suggest_float('opacity_threshold_fine_after', 0.00005, 0.1)
+    args.opacity_reset_interval = trial.suggest_float('opacity_reset_interval', 100, 5000)
     
     args.expname = f"Optimization_folder" # Do not change this name
 
-    psnr_test_list_coarse, psnr_test_list_fine = training(model_params.extract(args), model_hidden_params.extract(args), opt_params.extract(args), pipeline_params.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
+    try:
+        psnr_test_list_coarse, psnr_test_list_fine = training(model_params.extract(args), model_hidden_params.extract(args), opt_params.extract(args), pipeline_params.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
+    except:
+        print("")
+        return(mean(1,2,3,4,5))
     return mean(psnr_test_list_fine[-5:]) # mean of the last five items (iteration results)
 
 def vanilla_train(expname, iterations, coarse_iterations):
@@ -166,18 +242,18 @@ if __name__ == "__main__":
     script_name = sys.argv[0]
     args, model_params, opt_params, pipeline_params, model_hidden_params = get_params()
     
-    trial_no = 50
-    args.expname = "optuna_comparision"
+    trial_no = 150
+    args.expname = "loss_optimization"
     args.render = False
     args.iterations = 30000 # fine
     args.coarse_iterations = 7000 # coarse
 
     trial_start_time = time.time()
     study = optuna.create_study(direction="maximize",
-                                storage="sqlite:///db.sqlite3",
-                                study_name="opacity_optimization_db")
+                                storage="sqlite:///loss_opt_db.sqlite3",
+                                study_name="loss_optimization")
     
-    study.optimize(lambda trial: all_params_obj(trial), n_trials=trial_no)
+    study.optimize(lambda trial: loss_optimization(trial), n_trials=trial_no)
 
     trial_end_time = time.time()
     trial_elapsed_time = trial_end_time - trial_start_time

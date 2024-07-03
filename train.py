@@ -204,8 +204,10 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         # Loss
         # breakpoint()
 
-        Ll1 = l1_loss(image_tensor, gt_image_tensor[:,:3,:,:])
-        # Ll1 = l2_loss(image_tensor, gt_image_tensor[:,:3,:,:]) # For L2 LOSS USAGE !!, first uncomment
+        if args.loss == "l1":
+            Ll1 = l1_loss(image_tensor, gt_image_tensor[:,:3,:,:])
+        if args.loss == "l2":
+            Ll1 = l2_loss(image_tensor, gt_image_tensor[:,:3,:,:]) # For L2 LOSS USAGE !!, first uncomment
 
         psnr_ = psnr(image_tensor, gt_image_tensor).mean().double()
         # norm
@@ -318,7 +320,7 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     # scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
     #                      checkpoint_iterations, checkpoint, debug_from,
     #                      gaussians, scene, "fine", tb_writer, opt.iterations,timer)
-    return psnr_test_list_coarse, psnr_test_list_fine
+    return psnr_test_list_coarse, psnr_test_list_fine, ssim_test_list_fine
 
 def prepare_output_and_logger(expname):    
     if not args.model_path:
@@ -388,9 +390,11 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                                 tb_writer.add_images(stage + "/"+config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                     except:
                         pass
-
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    # l1_test += l2_loss(image, gt_image).mean().double() # For L2 LOSS USAGE !!, second uncomment
+                    
+                    if args.loss == "l1":
+                        l1_test += l1_loss(image, gt_image).mean().double()
+                    if args.loss == "l2":
+                        l1_test += l2_loss(image, gt_image).mean().double() # For L2 LOSS USAGE !!, second uncomment
                     # mask=viewpoint.mask
 
                     ssim_test += ssim(image,gt_image).item()
@@ -398,12 +402,14 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     psnr_test += psnr(image, gt_image, mask=None).mean().double()
 
                 psnr_test /= len(config['cameras'])
+                ssim_test /= len(config['cameras'])
                 
                 if stage == "coarse":
                     psnr_test_list_coarse.append(psnr_test.item()) # for optuna param optimization. Appended value example -> 26.422
 
                 if stage == "fine":
                     psnr_test_list_fine.append(psnr_test.item())
+                    ssim_test_list_fine.append(ssim_test)
 
                 l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
@@ -433,8 +439,10 @@ def get_params() -> Namespace:
     parser = ArgumentParser(description="Training script parameters")
     global psnr_test_list_coarse
     global psnr_test_list_fine
+    global ssim_test_list_fine
     psnr_test_list_coarse = list()
     psnr_test_list_fine = list()
+    ssim_test_list_fine = list()
 
     setup_seed(6666)
     lp = ModelParams(parser)
@@ -472,8 +480,10 @@ if __name__ == "__main__":
     # torch.set_default_tensor_type('torch.FloatTensor')
     global psnr_test_list_coarse
     global psnr_test_list_fine
+    global ssim_test_list_fine
     psnr_test_list_coarse = list()
     psnr_test_list_fine = list()
+    ssim_test_list_fine = list()
 
     torch.cuda.empty_cache()
     parser = ArgumentParser(description="Training script parameters")
@@ -512,9 +522,11 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    _, psnr_test_list_fine = training(lp.extract(args), hp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
+    _, psnr_test_list_fine, ssim_test = training(lp.extract(args), hp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
 
     print("Fine PSNR List Last Five Item Mean (From train.py) -> ", mean(psnr_test_list_fine[-5:]))
+    print("Fine SSIM List Last Five Item Mean (From train.py) -> ", mean(ssim_test[-5:]))
+    
     if args.render:
         try:
             print("\nRender after training..")
