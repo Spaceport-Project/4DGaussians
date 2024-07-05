@@ -12,7 +12,6 @@ from torchvision import transforms as T
 from tqdm import tqdm
 from utils.general_utils import PILtoTorch
 
-
 def normalize(v):
     """Normalize a vector."""
     return v / np.linalg.norm(v)
@@ -206,7 +205,6 @@ def get_spiral(c2ws_all, near_fars, rads_scale=1.0, N_views=120):
         c2w, up, rads, focal, zdelta, zrate=0.5, N=N_views
     )
     return np.stack(render_poses)
-
 
 class Neural3D_NDC_Dataset(Dataset):
     def __init__(

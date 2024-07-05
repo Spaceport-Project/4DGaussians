@@ -11,4 +11,5 @@ video_player/media/**
 submodules/
 *.sqlite3
 viewers/
+data_process/
 

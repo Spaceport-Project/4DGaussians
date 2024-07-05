@@ -155,7 +155,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             except StopIteration:
                 print("reset dataloader into random dataloader. -> ")
                 if not random_loader:
-                    viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=opt.batch_size,shuffle=True,num_workers=0,collate_fn=list)
+                    viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=opt.batch_size,shuffle=True,num_workers=32,collate_fn=list)
                     random_loader = True
                 loader = iter(viewpoint_stack_loader)
 
@@ -303,9 +303,14 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     # first_iter = 0
     tb_writer = prepare_output_and_logger(expname)
     gaussians = GaussianModel(dataset.sh_degree, hyper)
+    # torch.save(gaussians.state_dict(), "./gaussians.pt")
+    print("Gaussian model saving..")
+
     dataset.model_path = args.model_path
     timer = Timer()
     scene = Scene(dataset, gaussians, load_coarse=None, load_iteration=-1)
+    # torch.save(scene.state_dict(), "./scene.pt")
+    print("Scene model saving..")
     timer.start()
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                              checkpoint_iterations, checkpoint, debug_from,

@@ -148,6 +148,28 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
+def fetchPly_new(path):
+    print("Loading point cloud from {}".format(path))
+    plydata = PlyData.read(path)
+    vertices = plydata['vertex']
+
+    # Mandatory: positions
+    positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
+
+    # Optional: colors
+    if all([c in vertices.dtype().names for c in ['red', 'green', 'blue']]):
+        colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
+    else:
+        colors = np.zeros_like(positions)  # Or any default value
+
+    # Optional: normals
+    if all(n in vertices.dtype().names for n in ['nx', 'ny', 'nz']):
+        normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
+    else:
+        normals = np.zeros_like(positions)  # Or any default value
+
+    return BasicPointCloud(points=positions, colors=colors, normals=normals)
+
 def readColmapSceneInfo(path, images, eval, llffhold=8):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
@@ -486,11 +508,18 @@ def readdynerfInfo(datadir,use_bg_points,eval):
     val_cam_infos = format_render_poses(test_dataset.val_poses,test_dataset)
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
-    # xyz = np.load
-    pcd = fetchPly(ply_path)
+    bin_path = os.path.join(datadir, "points3D.bin")
+    xyz, rgb, _ = read_points3D_binary(bin_path)
+    # xyz, rgb, _ = increase_point_number(xyz, rgb, np.zeros((xyz.shape[0], 1)), factor=2)
+    storePly(ply_path, xyz, rgb)
+    pcd = fetchPly_new(ply_path)
     print("origin points,",pcd.points.shape[0])
+
+    # xyz = np.load
+    #pcd = fetchPly(ply_path)
+    #print("origin points,",pcd.points.shape[0])
     
-    print("after points,",pcd.points.shape[0])
+    #print("after points,",pcd.points.shape[0])
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_dataset,
