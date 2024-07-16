@@ -47,10 +47,10 @@ class Camera(nn.Module):
             self.original_image *= gt_alpha_mask
             # .to(self.data_device)
         else:
-            self.original_image *= torch.ones((1, self.image_height, self.image_width)).to(device='cuda') # Device added Equirece Implementation
+            # self.original_image *= torch.ones((1, self.image_height, self.image_width)).to(device='cuda') # Device added Equirece Implementation
 
-            # self.original_image = self.original_image.to('cpu') # Interval Trainings for bigger than 20
-            # self.original_image *= torch.ones((1, self.image_height, self.image_width)).to(device='cpu') # Interval Trainings for bigger than 20
+            self.original_image = self.original_image.to('cpu') # Interval Trainings for bigger than 20
+            self.original_image *= torch.ones((1, self.image_height, self.image_width)).to(device='cpu') # Interval Trainings for bigger than 20
 
         self.depth = depth
         self.mask = mask

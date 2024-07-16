@@ -10,8 +10,6 @@ import torch
 from PIL import Image
 import sys
 
-print("-------------------- IMPROC Generate masked data EXECUTION  --------------------")
-
 sys.path.append('/home/alper/Spaceport/data_process/YOLOX/yolox')
 sys.path.append('/home/alper/Spaceport/data_process/YOLOX/')
 from yolox.data.data_augment import ValTransform
@@ -430,6 +428,10 @@ def image_inference(yolo_predictor, sam_predictor, vis_folder, path, output_base
             #     boxes=transformed_boxes,
             #     multimask_output=False,
             #     )
+
+            # there might some problem when there are multiple person
+            # person_bboxes.cpu().numpy()[0] is necessary
+            
             masks, _, _ = sam_predictor.predict(
                 box = person_bboxes.cpu().numpy(),
                 multimask_output=True)

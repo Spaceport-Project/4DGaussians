@@ -27,8 +27,8 @@ def PILtoTorch(pil_image, resolution):
     # ---------------------- Equirec GPU Dataloader Implementation ----------------------
     
     resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0
-    resized_image = resized_image.to(device="cuda") # Interval Trainings for 20
-    # resized_image = resized_image.to(device="cpu") # Interval Trainings for bigger than 20
+    # resized_image = resized_image.to(device="cuda") # Interval Trainings for 20
+    resized_image = resized_image.to(device="cpu") # Interval Trainings for bigger than 20
 
     # if np.array(resized_image_PIL).max()!=1:
     #     resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0
