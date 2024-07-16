@@ -431,9 +431,13 @@ def image_inference(yolo_predictor, sam_predictor, vis_folder, path, output_base
 
             # there might some problem when there are multiple person
             # person_bboxes.cpu().numpy()[0] is necessary
+            if person_bboxes.shape[0] == 2:
+                box = person_bboxes.cpu().numpy()[0] # for basler cam09, multiple person segmentation 
+            else: 
+                box = person_bboxes.cpu().numpy()
             
             masks, _, _ = sam_predictor.predict(
-                box = person_bboxes.cpu().numpy(),
+                box = box,
                 multimask_output=True)
         
             # Create a blank alpha channel

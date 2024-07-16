@@ -23,7 +23,7 @@ def norm(head_data_dir):
                 denoised_image = cv2.fastNlMeansDenoisingColored(original_image, None, 10, 10, 7, 20)
                 # denoised_image = cv2.cvtColor(denoised_image, cv2.COLOR_BGR2BGRA)
                 # denoised_image[:, :, 3] = alpha_channel
-
+                
                 cv2.imwrite(image_path, denoised_image)
                 get_size(image_path)
                 print(f"\n{image_path}, Written.. ")

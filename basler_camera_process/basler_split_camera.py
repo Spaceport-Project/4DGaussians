@@ -1,10 +1,11 @@
 import itertools
 import os
 import shutil
+import cv2
 
-data_dir = "/mnt/Elements2/15-07-2024_Basler_DATA/test_images_oguz_2/"
+data_dir = "/mnt/Elements2/15-07-2024_Basler_DATA/test_images_oguz_3/"
 base_dir = "output"
-interval = 20
+interval = 3
 cam_num = 24
 
 def copy_first_frame(source_dir):
@@ -15,14 +16,14 @@ def copy_first_frame(source_dir):
     
     # Kaynak dizinindeki ilk tiff dosyasını bul
     for index, cam_folder in enumerate(os.listdir(os.path.join(source_dir, 'original_images'))):
-        first_tiff_file = os.path.join(source_dir, 'original_images', cam_folder, 'images', f"0000.tiff")
-        target_img = os.path.join(target_dir, f"{index:04d}.tiff")
+        first_tiff_file = os.path.join(source_dir, 'original_images', cam_folder, 'images', f"0000.png")
+        target_img = os.path.join(target_dir, f"{index:04d}.png")
     
         # Eğer dosya varsa, first_frames dizinine kopyala
         if os.path.exists(first_tiff_file):
             shutil.copy(first_tiff_file, target_img)
         else:
-            print(f"0000.tiff dosyası bulunamadı: {first_tiff_file}")
+            print(f"0000.png dosyası bulunamadı: {first_tiff_file}")
 
 def rename_images_in_directory(base_dir):
     print("Renaming..")
@@ -36,7 +37,7 @@ def rename_images_in_directory(base_dir):
             
             for i, image in enumerate(images):
                 old_image_path = os.path.join(images_dir, image)
-                new_image_name = f"{i:04d}.tiff"
+                new_image_name = f"{i:04d}.png"
                 new_image_path = os.path.join(images_dir, new_image_name)
                 
                 os.rename(old_image_path, new_image_path)
@@ -92,8 +93,12 @@ for index, sequence in enumerate(output_list):
         
         source_image_path = os.path.join(data_dir, image)
         dst_image_path = os.path.join(os.path.join(os.path.join(base_dir, output_interval)), f"original_images/cam{camera_id:02d}/images/{image}")
-        
-        shutil.copy(source_image_path, dst_image_path)
+        print(f"{source_image_path} to {dst_image_path}")
+        img = cv2.imread(source_image_path)
+        denoised_image = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 20)
+        cv2.imwrite(f"{dst_image_path.split('.')[0]}.png", denoised_image, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+
+        # shutil.copy(source_image_path, dst_image_path)
     
     print(f"Working on {output_interval} interval")
     counter += 1
