@@ -5,7 +5,7 @@ import cv2
 
 data_dir = "/mnt/Elements2/15-07-2024_Basler_DATA/test_images_oguz_3/"
 base_dir = "output"
-interval = 3
+interval = 6
 cam_num = 24
 
 def copy_first_frame(source_dir):
