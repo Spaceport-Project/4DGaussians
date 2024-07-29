@@ -16,6 +16,8 @@ from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
 from scene.dataset import FourDGSdataset
+from scene.cameras import Camera
+
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 from torch.utils.data import Dataset
@@ -42,6 +44,7 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
         self.video_cameras = {}
+
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, args.llffhold)
             dataset_type="colmap"
@@ -50,7 +53,7 @@ class Scene:
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval, args.extension)
             dataset_type="blender"
         elif os.path.exists(os.path.join(args.source_path, "poses_bounds.npy")):
-            scene_info = sceneLoadTypeCallbacks["dynerf"](args.source_path, args.white_background, args.eval)
+            scene_info = sceneLoadTypeCallbacks["dynerf"](args.source_path, args.white_background, args.eval, args.load_all_data_to_gpu)
             dataset_type="dynerf"
         elif os.path.exists(os.path.join(args.source_path,"dataset.json")):
             scene_info = sceneLoadTypeCallbacks["nerfies"](args.source_path, False, args.eval)
@@ -66,11 +69,9 @@ class Scene:
         self.maxtime = scene_info.maxtime
         self.dataset_type = dataset_type
         self.cameras_extent = scene_info.nerf_normalization["radius"]
-        print("Loading Training Cameras")
+
         self.train_camera = FourDGSdataset(scene_info.train_cameras, args, dataset_type)
-        print("Loading Test Cameras")
         self.test_camera = FourDGSdataset(scene_info.test_cameras, args, dataset_type)
-        print("Loading Video Cameras")
         self.video_camera = FourDGSdataset(scene_info.video_cameras, args, dataset_type)
 
         # self.video_camera = cameraList_from_camInfos(scene_info.video_cameras,-1,args)
@@ -92,6 +93,25 @@ class Scene:
                                                    ))
         else:
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, self.maxtime)
+
+    def prep_4dgs_dataset(self, returned_dict):        
+        colmap_id = returned_dict['colmap_id']
+        R = returned_dict['R']
+        T = returned_dict['T']
+        FoVx = returned_dict['FoVx']
+        FoVy = returned_dict['FoVy']
+        image = returned_dict['image']
+        gt_alpha_mask = returned_dict['gt_alpha_mask']
+        image_name = returned_dict['image_name']
+        uid = returned_dict['uid']
+        data_device = returned_dict['data_device']
+        time = returned_dict['time']
+        mask = returned_dict['mask']
+
+        return Camera(colmap_id=colmap_id,R=R,T=T,FoVx=FoVx,FoVy=FoVy,image=image,gt_alpha_mask=gt_alpha_mask,
+                              image_name=image_name,uid=uid,data_device=data_device,time=time,
+                              mask=mask)
+
 
     def save(self, iteration, stage):
         if stage == "coarse":

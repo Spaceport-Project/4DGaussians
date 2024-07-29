@@ -31,6 +31,8 @@ import lpips
 from utils.scene_utils import render_training_image
 from time import time
 import copy
+import torch.multiprocessing as mp
+import itertools
 
 to8b = lambda x : (255*np.clip(x.cpu().numpy(),0,1)).astype(np.uint8)
 
@@ -79,7 +81,6 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     test_cams = scene.getTestCameras()
     train_cams = scene.getTrainCameras()
 
-
     if not viewpoint_stack and not opt.dataloader:
         # dnerf's branch
         viewpoint_stack = [i for i in train_cams]
@@ -94,11 +95,12 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,sampler=sampler,num_workers=0,collate_fn=list)
             random_loader = False
         else:
+            # mp.set_start_method('spawn', force=True)
             viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,shuffle=True,num_workers=0,collate_fn=list)
             random_loader = True
+        # loader = itertools.cycle(viewpoint_stack_loader)
         loader = iter(viewpoint_stack_loader)
-    
-    
+
     # dynerf, zerostamp_init
     # breakpoint()
     if stage == "coarse" and opt.zerostamp_init:
@@ -154,9 +156,10 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 viewpoint_cams = next(loader)
             except StopIteration:
                 print("reset dataloader into random dataloader. -> ")
-                if not random_loader:
-                    viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=opt.batch_size,shuffle=True,num_workers=32,collate_fn=list)
-                    random_loader = True
+                # if not random_loader:
+                #     print("NEW DATALAODER")
+                #     viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=opt.batch_size,shuffle=True,num_workers=32,collate_fn=list)
+                #     random_loader = True
                 loader = iter(viewpoint_stack_loader)
 
         else:
@@ -370,7 +373,6 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         tb_writer.add_scalar(f'{stage}/train_loss_patchestotal_loss', loss.item(), iteration)
         tb_writer.add_scalar(f'{stage}/iter_time', elapsed, iteration)
         
-    
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()

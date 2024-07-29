@@ -30,5 +30,5 @@ def norm(head_data_dir):
 
 if __name__ == "__main__":
     # ------------ For masked (image with alpha channel) Uncomment Above Comments ------------ 
-    head_data_dir = "" # includes cam00, cam01 etc.
+    head_data_dir = "/home/alper/Spaceport/data/20_interval_bash_output/34-53/masked_undistorted_images" # includes cam00, cam01 etc.
     norm(head_data_dir)

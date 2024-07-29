@@ -28,11 +28,12 @@ OptimizationParams = dict(
     # net_width = 512,
     loss="l1",
     dataloader=True,
+    custom_sampler=None,
     opacity_reset_interval = 3000,
     densify_until_iter = 15_000, # default deger
     densify_from_iter = 500, # default deger
     iterations = 30_000,
-    coarse_iterations = 7000,
+    coarse_iterations = 8000,
     batch_size=1,
     deformation_lr_init = 0.00016,
     opacity_lr = 0.05, # default 0.05
@@ -42,4 +43,8 @@ OptimizationParams = dict(
     # pruning_interval = 2000,
     # lambda_lpips=0.5,
     # lambda_dssim=0.5,
+)
+
+ModelParams = dict(
+    load_all_data_to_gpu=False
 )

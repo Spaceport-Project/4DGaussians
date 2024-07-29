@@ -22,13 +22,6 @@ def post_proc(head_data_dir):
                 img.save(image_path)
                 print(f"{image_path} saved and ready to be trained.")
 
-def __getitem__(index): # Overrides Neural3D getitem Method 
-    images = list()
-    image_path = images[index]
-    cv2_image = cv2.imread(image_path)
-    cv2_tensor = torch.from_numpy(cv2_image)
-    cv2_tensor = cv2_tensor.to('cuda') / 255.0
-
 if __name__ == "__main__":
-    head_data_dir = "/home/alper/Spaceport/basler_camera_process/output/55-60/masked_undistorted_images/" # cam00, cam01
+    head_data_dir = "/home/alper/Spaceport/data/20_interval_resized_test_2200_1600_shape_full/140-159/masked_undistorted_images" # cam00, cam01
     post_proc(head_data_dir)

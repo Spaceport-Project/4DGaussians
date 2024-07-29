@@ -58,6 +58,7 @@ class ModelParams(ParamGroup):
         self.add_points=False
         self.extension=".png"
         self.llffhold=8
+        self.load_all_data_to_gpu=False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

@@ -9,24 +9,18 @@ import cv2
 import torch
 from PIL import Image
 import sys
+# sys.path.append('/home/')
 
-print("-------------------- IMPROC Generate masked data EXECUTION  --------------------")
-
-sys.path.append('/home/alper/Spaceport/data_process/YOLOX/yolox')
-sys.path.append('/home/alper/Spaceport/data_process/YOLOX/')
 from yolox.data.data_augment import ValTransform
 from yolox.data.datasets import COCO_CLASSES
 from yolox.exp import get_exp
 from yolox.utils import fuse_model, get_model_info, postprocess, vis
 
-sys.path.append('/home/alper/Spaceport/data_process/segment-anything')
 from segment_anything import sam_model_registry, SamPredictor
 
 from typing import Sequence
 from copy import deepcopy
-import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+
 
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
 
@@ -231,6 +225,7 @@ class Predictor(object):
 
         return vis_res, bboxes_data
     
+
 def make_parser():
     parser = argparse.ArgumentParser("YOLOX Demo!")
     parser.add_argument(
@@ -316,6 +311,10 @@ def make_parser():
     parser.add_argument('--background_imgs_path', type=str, help='Path to the background image files')
     parser.add_argument('--mask_video_output', type=str, help='Output directory for mask videos')
     parser.add_argument('--scale_factor', type=float, default=1.0, help='Scale factor for the foreground image')
+    parser.add_argument("--bg_path", default="./assets/dog.jpg", help="path to images or video")
+    parser.add_argument("--output_path", default="./assets/dog.jpg", help="path to images or video")
+    parser.add_argument("--erode_kernel_size", type=int)
+    parser.add_argument("--erode_iteration", type=int)
     return parser
 
 def get_model_info(model: torch.nn.Module, tsize: Sequence[int]) -> str:
@@ -354,149 +353,76 @@ def show_box(box, ax):
     w, h = box[2] - box[0], box[3] - box[1]
     ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='green', facecolor=(0,0,0,0), lw=2)) 
 
-def apply_clahe(image):
-    lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l_clahe = clahe.apply(l)
-    lab_clahe = cv2.merge((l_clahe, a, b))
-    return cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2RGB)
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-def color_transfer(target):
-    source = cv2.imread("/home/alper/Spaceport/improc/reference_masked_image_1.png")
-    source_lab = cv2.cvtColor(source, cv2.COLOR_BGR2LAB)
-    target_lab = cv2.cvtColor(target, cv2.COLOR_RGB2LAB)
-    
-    source_mean, source_std = cv2.meanStdDev(source_lab)
-    target_mean, target_std = cv2.meanStdDev(target_lab)
-    
-    l, a, b = cv2.split(target_lab)
-    l = (l - target_mean[0]) * (source_std[0] / target_std[0]) + source_mean[0]
-    a = (a - target_mean[1]) * (source_std[1] / target_std[1]) + source_mean[1]
-    b = (b - target_mean[2]) * (source_std[2] / target_std[2]) + source_mean[2]
-    
-    transfer_lab = cv2.merge((l, a, b))
-    transfer_bgr = cv2.cvtColor(transfer_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
-    return transfer_bgr
 
-def histogram_equalization(img):
-    img_yuv = cv2.cvtColor(img, cv2.COLOR_BGR2YUV)
-    img_yuv[:, :, 0] = cv2.equalizeHist(img_yuv[:, :, 0])
-    return cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
-
-def improc(image, mask):
-    # image -> RGB image
-    # mask -> mask, uint8. (0-255)
-    # image ve maske üzerinden yapılan işlemler burda gerçekleştiriliyor.
-    # return olarak ise process edilmiş maske ve maske ile blend edilmişçıktı verilecek
-
-    masked = cv2.bitwise_and(image, image, mask=mask) # blending
-    # equalized_image = histogram_equalization(masked)
-    clahed_img = apply_clahe(masked)
-    # cv2.imwrite("masked.png", masked)
-    return clahed_img
-
-# Değiştirilecek kısım burası
-def image_inference(yolo_predictor, sam_predictor, vis_folder, path, output_base_path, current_time):
-    print("-------------------------------- IMAGE INFERENCE FROM GENERATE MASKED DATA --------------------------------")
+def image_inference(yolo_predictor, sam_predictor, vis_folder, path, output_base_path, current_time, bg_image_path, erode_kernel, erode_iter, bg_img):
     if os.path.isdir(path):
         files = get_image_list(path)
     else:
         files = [path]
     files.sort()
+    # orig_img = cv2.imread(path)
 
     print('here')
     for image_name in files:
-        print("Image name in image inference -> ", image_name)
-        try:    
-            logger.info("Processing {}.".format(image_name))
-            outputs, img_info = yolo_predictor.inference(image_name)
-            vis_res, bboxes_data = yolo_predictor.visual(outputs[0], img_info)
-            
-            # Here add segment anything segmantation code that uses bbox_data
-
-            # First filter out the bboxes that are not person
-            person_bboxes = []
-            for bbox_data in bboxes_data:
-                if bbox_data["class_name"] == "person" or bbox_data["class_name"] == "dog":
-                    person_bboxes.append(bbox_data["bbox"])
-            person_bboxes = torch.tensor(person_bboxes, device="cuda")
-            image = cv2.imread(image_name)
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            sam_predictor.set_image(image)
-            # transformed_boxes = sam_predictor.transform.apply_boxes_torch(person_bboxes, image.shape[:2])    
-            # masks, _, _ = sam_predictor.predict_torch(point_coords=None,
-            #     point_labels=None,
-            #     boxes=transformed_boxes,
-            #     multimask_output=False,
-            #     )
-            masks, _, _ = sam_predictor.predict(
-                box = person_bboxes.cpu().numpy(),
-                multimask_output=True)
+        st = time.time()
+        logger.info("Processing {}.".format(image_name))
+        outputs, img_info = yolo_predictor.inference(image_name)
+        vis_res, bboxes_data = yolo_predictor.visual(outputs[0], img_info)
         
-            # Create a blank alpha channel
-            alpha_channel = np.zeros(image.shape[:2], dtype=np.uint8)
+        # Here add segment anything segmantation code that uses bbox_data
+        kernel = np.ones((erode_kernel, erode_kernel), np.uint8)
 
-            for mask in masks:
-                # Ensure mask is a 2D boolean array
-                # mask_np = mask.cpu().numpy().squeeze()  # Squeeze in case it's 1 x H x W
-                mask_np = mask.squeeze()
-                mask_to_proc = (mask.astype(np.uint8)) * 255 # 0-255
-                # cv2.imwrite("mask.png", mask_to_write)
-                if mask_np.ndim == 2:
-                    alpha_channel[mask_np] = 255  # Set alpha channel to opaque for masked areas
-            
-            # Apply morphological operations to aplha channel to remove the holes inside the mask
-            kernel = np.ones((7,7),np.uint8)
-            alpha_channel = cv2.morphologyEx(alpha_channel, cv2.MORPH_CLOSE, kernel)
-            
-            # Add the alpha channel to the original image
-            # equalized_image = improc(image, mask_to_proc)
-            # rgba_image = cv2.cvtColor(equalized_image, cv2.COLOR_RGB2RGBA)
-            rgba_image = cv2.cvtColor(image, cv2.COLOR_RGB2RGBA) # No Improc
-            rgba_image[:, :, 3] = alpha_channel
+        # First filter out the bboxes that are not person
+        person_bboxes = []
+        for bbox_data in bboxes_data:
+            if bbox_data["class_name"] == "person" or bbox_data["class_name"] == "dog":
+                person_bboxes.append(bbox_data["bbox"])
+                break
+        person_bboxes = torch.tensor(person_bboxes, device="cuda")
+        image = cv2.imread(image_name)
+        img_size = os.path.getsize(image_name) / (1024 * 1024)
+        print(f"Image Shape -> {image.shape} --- dtype -> {image.dtype} --- Size -> {img_size} MB")
+        orig_img = image.copy()
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        sam_predictor.set_image(image)
+        # transformed_boxes = sam_predictor.transform.apply_boxes_torch(person_bboxes, image.shape[:2])    
+        # masks, _, _ = sam_predictor.predict_torch(point_coords=None,
+        #     point_labels=None,
+        #     boxes=transformed_boxes,
+        #     multimask_output=False,
+        #     )
+        
+        masks, _, _ = sam_predictor.predict(
+            box = person_bboxes.cpu().numpy(),
+            multimask_output=True
+        )
+        print("Render Process Segmentation -> ", time.time() - st)
 
-            bg = np.array([1,1,1])
-            norm_data = rgba_image / 255.0
-            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
-            rgb_save = arr * 255.0
+        # Create a blank alpha channel
+        alpha_channel = np.zeros(image.shape[:2], dtype=np.uint8)
 
-            vis_name = os.path.basename(image_name)
-            vis_path = os.path.join(vis_folder, vis_name)
-            #cv2.imwrite(vis_path, vis_res)
-            json_path = os.path.join(vis_folder, vis_name.replace(".jpg", ".json"))
-            with open(json_path, "w") as f:
-                json.dump(bboxes_data, f)      
+        for i, mask in enumerate(masks):
+            # Ensure mask is a 2D boolean array
+            # mask_np = mask.cpu().numpy().squeeze()  # Squeeze in case it's 1 x H x W
+            mask_np = mask.squeeze() 
+            if mask_np.ndim == 2:
+                alpha_channel[mask_np] = 255  # Set alpha channel to opaque for masked areas
 
-            # Determine the subfolder structure
-            subfolder_path = os.path.relpath(os.path.dirname(image_name), path)
-            output_subfolder_path = os.path.join(output_base_path, subfolder_path)
+        mask_to_write = mask_np.astype(np.uint8) * 255
+        
+        processed_mask = cv2.erode(mask_to_write, kernel, erode_iter)
+        post_processed_person_merge = cv2.bitwise_and(orig_img, orig_img, mask=processed_mask[:, :, None])
+        bg_img[processed_mask != 0] = post_processed_person_merge[processed_mask != 0]
 
-            # Create the subfolder in the output path if it does not exist
-            os.makedirs(output_subfolder_path, exist_ok=True)
-
-            # Save the processed image to the output subfolder
-            output_image_name = os.path.basename(image_name).replace(".jpg", "_masked.png")
-            output_image_path = os.path.join(output_subfolder_path, output_image_name)
-            print('Saving image to {}'.format(output_image_path))
-            rgba_image = cv2.cvtColor(rgba_image, cv2.COLOR_RGBA2BGRA)
-            cv2.imwrite(output_image_path, rgba_image)
-
-            # rgb_save = cv2.cvtColor(rgb_save, cv2.COLOR_RGB2BGR)
-            # cv2.imwrite(output_image_path, rgb_save)
-
-            # save_rgb = Image.fromarray(np.array(rgb_save, dtype=np.byte), "RGB")
-            # save_rgb.save(output_image_path)
-
-
-            # Optionally save the original YOLO visualization and JSON data
-            vis_name = os.path.basename(image_name)
-            vis_path = os.path.join(output_subfolder_path, vis_name)
-            json_path = os.path.join(output_subfolder_path, vis_name.replace(".jpg", ".json"))
-            #cv2.imwrite(vis_path, vis_res)
-        except Exception as e:
-            logger.error(f"Error processing {image_name}: {e}")
-            continue
+        image_name = (image_name.split("/")[-1]).split(".")[0]
+        image_output = os.path.join(output_base_path, image_name)
+        print("Render Process all process (except image saving) -> ", time.time() - st)
+        cv2.imwrite(f"{image_output}.png", bg_img)
+        print("Render Process all process (INCLUDES image saving) -> ", time.time() - st)
 
 def video_inference(yolo_predictor, sam_predictor, vis_folder, path, output_base_path):
     # Check if the input path is a video file
@@ -841,6 +767,7 @@ def image_inference_fixed_bbox(yolo_predictor, sam_predictor, vis_folder, path, 
         save_rgb = Image.fromarray(np.array(rgb_save, dtype=np.byte), "RGB")
         save_rgb.save(output_image_path)
 
+
 def video_inference_fixed_bbox(sam_predictor, path, output_base_path, fixed_bounding_boxes):
     print("Starting video inference for path: {}".format(path))
     if path.endswith(".mp4") or path.endswith(".avi") or path.endswith(".mov"):
@@ -1002,10 +929,16 @@ def main(exp, args):
     current_time = time.localtime()
     paren_dir = os.path.dirname(args.path)
 
+    bg_image_path = args.bg_path
+    erode_kernel = args.erode_kernel_size
+    erode_iter = args.erode_iteration
+    bg_img = cv2.imread(args.bg_path)
+
     if args.demo == "images":
-        output_path = os.path.join(paren_dir, 'masked_undistorted_images')
+        # output_path = os.path.join(paren_dir, 'processed_render_images')
+        output_path = args.output_path
         print("image inference starting...")
-        image_inference(predictor, sam_predictor, vis_folder, args.path, output_path, current_time)
+        image_inference(predictor, sam_predictor, vis_folder, args.path, output_path, current_time, bg_image_path, erode_kernel, erode_iter, bg_img)
         print("image inference done!")
     elif args.demo == "video":
         output_path = os.path.join(paren_dir, 'masked_videos')
@@ -1019,5 +952,4 @@ if __name__ == "__main__":
     args = make_parser().parse_args()
     exp = get_exp(args.exp_file, args.name)
 
-    main(exp, args)
-
+    returned_image = main(exp, args)

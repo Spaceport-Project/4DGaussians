@@ -482,8 +482,8 @@ def readdynerfInfo(datadir,use_bg_points,eval):
         time_scale=1,
         scene_bbox_min=[-2.5, -2.0, -1.0],
         scene_bbox_max=[2.5, 2.0, 1.0],
-        eval_index=0,
-            )    
+        eval_index=0,)
+        
         test_dataset = Neural3D_NDC_Dataset(
         datadir,
         "test",
@@ -491,8 +491,7 @@ def readdynerfInfo(datadir,use_bg_points,eval):
         time_scale=1,
         scene_bbox_min=[-2.5, -2.0, -1.0],
         scene_bbox_max=[2.5, 2.0, 1.0],
-        eval_index=0,
-            )
+        eval_index=0,)
     
     if not os.path.exists(os.path.join(datadir, "train_dataset.pt")):
         print("train_dataset.pt Cache Does not Found, saving..")
