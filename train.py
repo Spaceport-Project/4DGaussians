@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 import numpy as np
+import gc
 import random
 import os, sys
 import torch
@@ -29,10 +30,10 @@ from utils.timer import Timer
 from utils.loader_utils import FineSampler, get_stamp_list
 import lpips
 from utils.scene_utils import render_training_image
-from time import time
+# from time import time
 import copy
-import torch.multiprocessing as mp
-import itertools
+import time
+import nvidia_smi
 
 to8b = lambda x : (255*np.clip(x.cpu().numpy(),0,1)).astype(np.uint8)
 
@@ -48,6 +49,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         first_iter = 0
     else:
         first_iter = scene.loaded_iter
+    EPOCH = 1
 
     gaussians.training_setup(opt)
     if checkpoint:
@@ -79,26 +81,35 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     # lpips_model = lpips.LPIPS(net="vgg").cuda()
     video_cams = scene.getVideoCameras()
     test_cams = scene.getTestCameras()
-    train_cams = scene.getTrainCameras()
+    # train_cams = scene.getTrainCameras()
+    # train_cams = scene.getTrainCameras()
 
-    if not viewpoint_stack and not opt.dataloader:
-        # dnerf's branch
-        viewpoint_stack = [i for i in train_cams]
-        temp_list = copy.deepcopy(viewpoint_stack)
-    # 
+    # if not viewpoint_stack and not opt.dataloader:
+    #     # dnerf's branch
+    #     viewpoint_stack = [i for i in train_cams]
+    #     temp_list = copy.deepcopy(viewpoint_stack)
+
     batch_size = opt.batch_size
-    print("data loading done")
+    fourdgs_subsets_list = scene.getSubsetsForTraining()
+    fourdgs_subsets_generator = (item for item in fourdgs_subsets_list)
+    # print("data loading done")
     if opt.dataloader:
-        viewpoint_stack = scene.getTrainCameras()
+        # print("Dataloader")
+         # subsetleri içeren liste
+        # print("fourdgs_subsets_list -> ", fourdgs_subsets_list)
+         # subsetleri içeren generator
+        viewpoint_stack = next(fourdgs_subsets_generator) # generatorden ilk item (4dgs dataset) alınıyor
+        # print("ViewpointStack Type->", type(viewpoint_stack)) # 4DGS dataset
+        viewpoint_stack.dataset.unload_gpu()
+        viewpoint_stack.dataset.load_to_gpu() # neural dataset loading to gpu
+        
         if opt.custom_sampler is not None:
             sampler = FineSampler(viewpoint_stack)
             viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,sampler=sampler,num_workers=0,collate_fn=list)
             random_loader = False
         else:
-            # mp.set_start_method('spawn', force=True)
             viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,shuffle=True,num_workers=0,collate_fn=list)
             random_loader = True
-        # loader = itertools.cycle(viewpoint_stack_loader)
         loader = iter(viewpoint_stack_loader)
 
     # dynerf, zerostamp_init
@@ -110,7 +121,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         viewpoint_stack = temp_list.copy()
     else:
         load_in_memory = False 
-                            # 
+                            
     count = 0
     for iteration in range(first_iter, final_iter+1):        
         if network_gui.conn == None:
@@ -139,7 +150,6 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             except Exception as e:
                 print(e)
                 network_gui.conn = None
-
         iter_start.record()
 
         gaussians.update_learning_rate(iteration)
@@ -153,21 +163,30 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         # dynerf's branch
         if opt.dataloader and not load_in_memory:
             try:
-                viewpoint_cams = next(loader)
+                viewpoint_cams = next(loader) # ilk subset üzerinde iteration. Scene objesi dönmesi lazım
             except StopIteration:
-                print("reset dataloader into random dataloader. -> ")
-                # if not random_loader:
-                #     print("NEW DATALAODER")
-                #     viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=opt.batch_size,shuffle=True,num_workers=32,collate_fn=list)
-                #     random_loader = True
-                loader = iter(viewpoint_stack_loader)
 
-        else:
+                try:
+                    st_unload_gpu = time.time()
+                    viewpoint_stack.dataset.unload_gpu()
+                    viewpoint_stack = next(fourdgs_subsets_generator)
+                    st = time.time()
+                    viewpoint_stack.dataset.load_to_gpu()
+                    viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,shuffle=True,num_workers=0,collate_fn=list)
+                    loader = iter(viewpoint_stack_loader)
+                except StopIteration:
+                    viewpoint_stack.dataset.unload_gpu()
+                    fourdgs_subsets_generator = (item for item in fourdgs_subsets_list)
+                    viewpoint_stack = next(fourdgs_subsets_generator)
+                    viewpoint_stack.dataset.load_to_gpu()
+                    viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,shuffle=True,num_workers=0,collate_fn=list)
+                    loader = iter(viewpoint_stack_loader)
+                    EPOCH += 1
+        else:       
             idx = 0
             viewpoint_cams = []
 
             while idx < batch_size :    
-                    
                 viewpoint_cam = viewpoint_stack.pop(randint(0,len(viewpoint_stack)-1))
                 if not viewpoint_stack :
                     viewpoint_stack =  temp_list.copy()
@@ -199,7 +218,6 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             visibility_filter_list.append(visibility_filter.unsqueeze(0))
             viewspace_point_tensor_list.append(viewspace_point_tensor)
         
-
         radii = torch.cat(radii_list,0).max(dim=0).values
         visibility_filter = torch.cat(visibility_filter_list).any(dim=0)
         image_tensor = torch.cat(images,0)
@@ -218,7 +236,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         loss = Ll1
         if stage == "fine" and hyper.time_smoothness_weight != 0:
             # tv_loss = 0
-            tv_loss = gaussians.compute_regulation(hyper.time_smoothness_weight, hyper.l1_time_planes, hyper.plane_tv_weight)
+            tv_loss = gaussians.compute_regulation(hyper.time_smoothness_weight, hyper.l1_time_planes, hyper.plane_tv_weight) # bu kısımda patlıyor
             loss += tv_loss
         if opt.lambda_dssim != 0:
             ssim_loss = ssim(image_tensor,gt_image_tensor)
@@ -226,7 +244,6 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         if opt.lambda_lpips !=0:
             lpipsloss = lpips_loss(image_tensor,gt_image_tensor,lpips_model)
             loss += opt.lambda_lpips * lpipsloss
-        
         loss.backward()
         if torch.isnan(loss).any():
             print("loss is nan,end training, reexecv program now.")
@@ -242,13 +259,13 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             ema_psnr_for_log = 0.4 * psnr_ + 0.6 * ema_psnr_for_log
             total_point = gaussians._xyz.shape[0]
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}",
+                progress_bar.set_postfix({"Epoch":f"{EPOCH}",
+                                          "Loss": f"{ema_loss_for_log:.{7}f}",
                                           "psnr": f"{psnr_:.{2}f}",
                                           "point":f"{total_point}"})
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
-
             # Log and save
             timer.pause()
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, [pipe, background], stage, scene.dataset_type)
@@ -307,17 +324,49 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     tb_writer = prepare_output_and_logger(expname)
     gaussians = GaussianModel(dataset.sh_degree, hyper)
     # torch.save(gaussians.state_dict(), "./gaussians.pt")
-    print("Gaussian model saving..")
+    # print("Gaussian model saving..")
 
     dataset.model_path = args.model_path
     timer = Timer()
     scene = Scene(dataset, gaussians, load_coarse=None, load_iteration=-1)
     # torch.save(scene.state_dict(), "./scene.pt")
-    print("Scene model saving..")
+    # print("Scene model saving..")
     timer.start()
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                              checkpoint_iterations, checkpoint, debug_from,
                              gaussians, scene, "coarse", tb_writer, opt.coarse_iterations,timer)
+    
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    nvidia_smi.nvmlInit()
+    handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
+    info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+    
+    used_gpu_vram_gb = info.used / (1024 * 1024)
+    print(f"After Coarse Training Used VRAM is {used_gpu_vram_gb} GB")
+    nvidia_smi.nvmlShutdown()
+
+    fourdgs_subsets_list = scene.getSubsetsForTraining() # subsetleri içeren liste
+    # print("fourdgs_subsets_list -> ", fourdgs_subsets_list)
+    fourdgs_subsets_generator = (item for item in fourdgs_subsets_list) # subsetleri içeren generator
+
+    viewpoint_stack = next(fourdgs_subsets_generator) # generatorden ilk item (4dgs dataset) alınıyor
+    # print("ViewpointStack Type->", type(viewpoint_stack)) # 4DGS dataset
+    viewpoint_stack.dataset.unload_gpu()
+
+    for subset in fourdgs_subsets_generator:
+        print("offloading all GPU's")
+        subset.dataset.unload_gpu()
+        
+    nvidia_smi.nvmlInit()
+    handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
+    info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+    
+    used_gpu_vram_gb = info.used / (1024 * 1024)
+    print(f"After offloading all subsets on stage == fine using VRAM is {used_gpu_vram_gb} GB")
+    nvidia_smi.nvmlShutdown()
+
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                          checkpoint_iterations, checkpoint, debug_from,
                          gaussians, scene, "fine", tb_writer, opt.iterations,timer)
@@ -376,8 +425,9 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : [scene.getTestCameras()[idx % len(scene.getTestCameras())] for idx in range(10, 5000, 299)]},
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(10, 5000, 299)]})
+        # validation_configs = ({'name': 'test', 'cameras' : [scene.getTestCameras()[idx % len(scene.getTestCameras())] for idx in range(10, 5000, 299)]},
+        #                       {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(10, 5000, 299)]})
+        validation_configs = scene.getValidationConfigs()
 
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:

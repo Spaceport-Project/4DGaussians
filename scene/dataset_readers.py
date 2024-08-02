@@ -13,6 +13,7 @@ import os
 import sys
 from PIL import Image
 from scene.cameras import Camera
+import gc
 
 from typing import NamedTuple
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
@@ -31,6 +32,8 @@ from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 from utils.general_utils import PILtoTorch
 from tqdm import tqdm
+from torch.utils.data import Subset
+
 class CameraInfo(NamedTuple):
     uid: int
     R: np.array
@@ -45,6 +48,47 @@ class CameraInfo(NamedTuple):
     time : float
     mask: np.array
    
+class CustomSubset(Subset):
+    def __init__(self, dataset, indices):
+        super().__init__(dataset, indices)
+        self.dataset = dataset
+        # self.image_list = self.dataset.images # variable comes from neural3D Dataset "self.images"
+        self.focal = dataset.focal # subset focal = neural_dataset.focal
+        self.subset_images = None
+        self.images = list()
+        self.image_poses = list()
+        self.image_times = list()
+
+    def __len__(self):
+        return len(self.images)
+    
+    def __getitem__(self, index):
+        # print("Sbuset getitem with index ->", index)
+        return self.images[index], self.image_poses[index], self.image_times[index]
+    
+    def get_len(self):
+        print("Dataset Length inside of the subset -> ", len(self.images))
+
+    def get_images_len(self):
+        print("Subset images len from neural 3D datset -> ", len(self.image_list))
+
+    def load_to_gpu(self):
+        # self.image_list = [image.to('cuda') for image in self.image_list]
+        for index, image in enumerate(self.images):
+            print("image gpu loading ->", image.shape, index)
+            # image = image.to('cuda')
+            self.images[index] = image.to('cuda', non_blocking=True)
+            # print("Image device on subset gpu loading ->", image.device)
+
+    def unload_gpu(self):
+        # self.image_list = [image.to('cpu') for image in self.image_list]
+        for index, image in enumerate(self.images):
+            print("image gpu OFFloading ->", image.shape, index)
+            # image = image.to('cpu')
+            self.images[index] = image.to('cpu', non_blocking=True)
+        torch.cuda.empty_cache()
+        gc.collect()
+
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
     train_cameras: list
@@ -53,6 +97,7 @@ class SceneInfo(NamedTuple):
     nerf_normalization: dict
     ply_path: str
     maxtime: int
+    val_subset: CustomSubset
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -462,44 +507,84 @@ def add_points(pointsclouds, xyz_min, xyz_max):
     return pointsclouds
     # breakpoint()
     # new_
-def readdynerfInfo(datadir,use_bg_points,eval):
+
+def create_subsets_deterministic(dataset, subset_size):
+    subsets = []
+    total_size = len(dataset)
+    for i in range(0, total_size, subset_size):
+        subset_indices = list(range(i, min(i + subset_size, total_size)))
+        subsets.append(CustomSubset(dataset, subset_indices))
+    return subsets
+
+def create_validation_subset(dataset):
+    original_indices = [idx % len(dataset) for idx in range(10, 5000, 299)]
+    val_subset = CustomSubset(dataset, original_indices)
+    return val_subset
+
+def create_subsets_random(dataset, subset_size):
+    subsets = []
+    indices = torch.randperm(len(dataset)).tolist()
+    for i in range(0, len(dataset), subset_size):
+        subset_indices = indices[i:i + subset_size]
+        subsets.append(CustomSubset(dataset, subset_indices))
+    return subsets
+
+def readdynerfInfo(datadir,use_bg_points,eval,load_all_data_to_gpu):
     # loading all the data follow hexplane format
     # ply_path = os.path.join(datadir, "points3D_dense.ply")
     # ply_path = os.path.join(datadir, "points3D_downsample2.ply")
     ply_path = os.path.join(datadir, "fused.ply")
     
-    if os.path.exists(os.path.join(datadir, "train_dataset.pt")) and os.path.exists(os.path.join(datadir, "test_dataset.pt")):
-        print("Dataset Cache have been Founded, Skipping Dataset Creation..")
-        train_dataset = torch.load(os.path.join(datadir, "train_dataset.pt"))
-        test_dataset = torch.load(os.path.join(datadir, "test_dataset.pt"))
-    else:
-        from scene.neural_3D_dataset_NDC import Neural3D_NDC_Dataset
-        print("Dataset Cache Does not Found, Creating Dataset..")
-        train_dataset = Neural3D_NDC_Dataset(
-        datadir,
-        "train",
-        1.0,
-        time_scale=1,
-        scene_bbox_min=[-2.5, -2.0, -1.0],
-        scene_bbox_max=[2.5, 2.0, 1.0],
-        eval_index=0,)
-        
-        test_dataset = Neural3D_NDC_Dataset(
-        datadir,
-        "test",
-        1.0,
-        time_scale=1,
-        scene_bbox_min=[-2.5, -2.0, -1.0],
-        scene_bbox_max=[2.5, 2.0, 1.0],
-        eval_index=0,)
-    
-    if not os.path.exists(os.path.join(datadir, "train_dataset.pt")):
-        print("train_dataset.pt Cache Does not Found, saving..")
-        torch.save(train_dataset, os.path.join(datadir, "train_dataset.pt"))
-    
-    if not os.path.exists(os.path.join(datadir, "test_dataset.pt")):
-        print("test_dataset.pt Cache Does not Found, saving..")
-        torch.save(test_dataset, os.path.join(datadir, "test_dataset.pt"))
+    # if os.path.exists(os.path.join(datadir, "train_dataset.pt")) and os.path.exists(os.path.join(datadir, "test_dataset.pt")):
+    #     print("Dataset Cache have been Founded, Skipping Dataset Creation..")
+    #     train_dataset = torch.load(os.path.join(datadir, "train_dataset.pt"))
+    #     test_dataset = torch.load(os.path.join(datadir, "test_dataset.pt"))
+    # else:
+    from scene.neural_3D_dataset_NDC import Neural3D_NDC_Dataset
+    print("Dataset Cache Does not Found, Creating Dataset..")
+
+    full_train_dataset = Neural3D_NDC_Dataset(
+    datadir,
+    "train",
+    1.0,
+    time_scale=1,
+    scene_bbox_min=[-2.5, -2.0, -1.0],
+    scene_bbox_max=[2.5, 2.0, 1.0],
+    eval_index=0,
+    load_all_data_to_gpu=load_all_data_to_gpu,
+    load_on_cpu=True
+    )
+
+    train_dataset = Neural3D_NDC_Dataset(
+    datadir,
+    "train",
+    1.0,
+    time_scale=1,
+    scene_bbox_min=[-2.5, -2.0, -1.0],
+    scene_bbox_max=[2.5, 2.0, 1.0],
+    eval_index=0,
+    load_all_data_to_gpu=load_all_data_to_gpu,
+    load_on_cpu=True
+    )
+
+    test_dataset = Neural3D_NDC_Dataset(
+    datadir,
+    "test",
+    1.0,
+    time_scale=1,
+    scene_bbox_min=[-2.5, -2.0, -1.0],
+    scene_bbox_max=[2.5, 2.0, 1.0],
+    eval_index=0,
+    load_all_data_to_gpu=load_all_data_to_gpu,
+    load_on_cpu=False)
+
+    # if not os.path.exists(os.path.join(datadir, "train_dataset.pt")):
+    #     print("train_dataset.pt Cache Does not Found, saving..")
+    #     torch.save(train_dataset, os.path.join(datadir, "train_dataset.pt"))
+
+    # if not os.path.exists(os.path.join(datadir, "test_dataset.pt")):
+    #     print("test_dataset.pt Cache Does not Found, saving..")
+    #     torch.save(test_dataset, os.path.join(datadir, "test_dataset.pt"))
     
     max_time = len(os.listdir(os.path.join(datadir,"cam01","images")))
 
@@ -514,20 +599,51 @@ def readdynerfInfo(datadir,use_bg_points,eval):
     pcd = fetchPly_new(ply_path)
     print("origin points,",pcd.points.shape[0])
 
+    subset_size = 69
+
+    # subsets = create_subsets_random(train_dataset, subset_size)
+    subsets = create_subsets_deterministic(train_dataset, subset_size)
+    for i, subset in enumerate(subsets):
+        for idx in subset.indices:
+            image, pose, time = train_dataset[idx]
+            subset.images.append(image)
+            subset.image_poses.append(pose)
+            subset.image_times.append(time)
+
+    for i, subset in enumerate(subsets):
+        print(f"Subset {i} - images len -> {len(subset.images)} -- poses len -> {len(subset.image_poses)}-- times len -> {len(subset.image_times)} -- focal -> {subset.focal}")
+    
+    # original_indices = [idx % len(train_dataset) for idx in range(10, 5000, 299)]
+    # self.test_camera[idx % len(self.test_camera)] for idx in range(10, 5000, 299)]
+    val_subset = create_validation_subset(train_dataset) # NOT WORKING NOT WORKING NOT WORKING NOT WORKING NOT WORKING
+
     # xyz = np.load
-    #pcd = fetchPly(ply_path)
     #print("origin points,",pcd.points.shape[0])
     
     #print("after points,",pcd.points.shape[0])
 
+    # scene_info = SceneInfo(point_cloud=pcd,
+    #                        train_cameras=train_dataset,
+    #                        test_cameras=test_dataset,
+    #                        video_cameras=val_cam_infos,
+    #                        nerf_normalization=nerf_normalization,
+    #                        ply_path=ply_path,
+    #                        maxtime=max_time
+    #                        )
+    
+    print("Deleting train dataset object")
+    del train_dataset
+
     scene_info = SceneInfo(point_cloud=pcd,
-                           train_cameras=train_dataset,
+                           train_cameras=subsets,
                            test_cameras=test_dataset,
                            video_cameras=val_cam_infos,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path,
-                           maxtime=max_time
+                           maxtime=max_time,
+                           val_subset=val_subset
                            )
+
     return scene_info
 
 def setup_camera(w, h, k, w2c, near=0.01, far=100):

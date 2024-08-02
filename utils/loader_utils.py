@@ -50,3 +50,4 @@ class FineSampler(Sampler):
     
     def __len__(self):
         return len(self.sample_list)
+    

@@ -46,5 +46,5 @@ OptimizationParams = dict(
 )
 
 ModelParams = dict(
-    load_all_data_to_gpu=False
+    load_all_data_to_gpu=False,
 )
