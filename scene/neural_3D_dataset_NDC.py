@@ -2,6 +2,7 @@ import concurrent.futures
 import gc
 import glob
 import os
+import time
 
 import cv2
 import numpy as np
@@ -11,7 +12,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms as T
 from tqdm import tqdm
 from utils.general_utils import PILtoTorch
-
+import nvidia_smi
 
 def normalize(v):
     """Normalize a vector."""
@@ -109,8 +110,6 @@ def render_path_spiral(c2w, up, rads, focal, zdelta, zrate, N_rots=2, N=120):
         render_poses.append(viewmatrix(z, up, c))
     return render_poses
 
-
-
 def process_video(video_data_save, video_path, img_wh, downsample, transform):
     """
     Load video_path data to video_data_save tensor.
@@ -153,7 +152,6 @@ def process_video(video_data_save, video_path, img_wh, downsample, transform):
     video_frames.release()
     print(f"Video {video_path} processed.")
     return None
-
 
 # define a function to process all videos
 def process_videos(videos, skip_index, img_wh, downsample, transform, num_workers=1):
@@ -206,8 +204,7 @@ def get_spiral(c2ws_all, near_fars, rads_scale=1.0, N_views=120):
         c2w, up, rads, focal, zdelta, zrate=0.5, N=N_views
     )
     return np.stack(render_poses)
-
-
+    
 class Neural3D_NDC_Dataset(Dataset):
     def __init__(
         self,
@@ -225,6 +222,8 @@ class Neural3D_NDC_Dataset(Dataset):
         eval_step=1,
         eval_index=0,
         sphere_scale=1.0,
+        load_all_data_to_gpu=False,
+        load_on_cpu=True # set this param if subset training True, Validation or render False
     ):
         
         cam01_images_fold = os.path.join(datadir,"cam01","images")
@@ -260,9 +259,22 @@ class Neural3D_NDC_Dataset(Dataset):
         self.white_bg = False
         self.ndc_ray = True
         self.depth_data = False
+        self.load_all_data_to_gpu = load_all_data_to_gpu
+        self.gb_convertion = (1024 * 1024)
+        self.load_on_cpu = load_on_cpu
+
+        if self.load_all_data_to_gpu:
+            print("-------------- Loading All Data to GPU --------------")
+            nvidia_smi.nvmlInit()
+            handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
+            info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+            
+            self.used_gpu_vram_gb = info.used / self.gb_convertion
+            nvidia_smi.nvmlShutdown()
 
         self.load_meta()
-        print(f"meta data loaded, total image:{len(self)}")
+        print(f"meta data loaded, total image on {self.split} : {len(self)}")
+        
 
     def load_meta(self):
         """
@@ -307,6 +319,12 @@ class Neural3D_NDC_Dataset(Dataset):
         # self.image_paths, self.image_poses, self.image_times, N_cam, N_time = self.load_images_path(videos, self.split)
         if self.split == "train" or self.split == "test":
             self.images, self.image_paths, self.image_poses, self.image_times, N_cam, N_time = self.load_images_path(videos)
+
+            print(f"self.images len -> {len(self.images)} -- {self.split}")
+            print(f"self.image_paths len -> {len(self.image_paths)} -- {self.split}")
+            print(f"self.image_poses len -> {len(self.image_poses)}-- {self.split}")
+            print(f"self.image_times len -> {len(self.image_times)}-- {self.split}")
+            
             # self.image_paths, self.image_poses, self.image_times, N_cam, N_time = self.load_images_path(videos)
         else:
             self.images, self.image_paths, self.image_poses, self.image_times = [], [], [], []
@@ -319,6 +337,8 @@ class Neural3D_NDC_Dataset(Dataset):
         return render_poses, self.time_scale * render_times
     
     def load_images_path(self,videos):
+        nvidia_smi.nvmlInit()
+
         images = []
         image_paths = []
         image_poses = []
@@ -350,8 +370,8 @@ class Neural3D_NDC_Dataset(Dataset):
                         video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
                         video_frame = Image.fromarray(video_frame)
                         if self.downsample != 1.0:
-
                             img = video_frame.resize(self.img_wh, Image.LANCZOS)
+
                         img.save(os.path.join(image_path,"%04d.png"%count))
 
                         # img = transform(img)
@@ -375,37 +395,46 @@ class Neural3D_NDC_Dataset(Dataset):
                 image_times.append(idx/countss)
                 image_poses.append((R,T))
 
-                # print(f"{img_path} is processing..")
-                img = Image.open(img_path)
-                im_data = np.array(img.convert("RGBA"))
-                bg = np.array([1,1,1])
-                norm_data = im_data / 255.0
-                arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
-                img = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
-                img = PILtoTorch(img,(img.size[0], img.size[1]))
-                images.append(img)
+                handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
+                info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+                st = time.time()
+                # print(f"Image {img_path} to -> {self.split}")
 
-                # if self.downsample != 1.0:
-                #     img = video_frame.resize(self.img_wh, Image.LANCZOS)
-                # img.save(os.path.join(image_path,"%04d.png"%count))
+                img = Image.open(img_path)
+                im_data = np.array(img)
+                cv2_tensor = torch.from_numpy(im_data) / 255.0
+                if self.load_all_data_to_gpu:
+                    cv2_tensor = cv2_tensor.to('cuda')
+                    print("Image = {}, Memory : ({:.2f}% free): {}(total GB), {} (free GB), {} (used GB)".format(index, 100*info.free/info.total, info.total / self.gb_convertion, info.free / self.gb_convertion, info.used / self.gb_convertion))
+                    # print(f"{im_data.shape} Image Consumed {(info.used / self.gb_convertion) - self.used_gpu_vram_gb} MB on VRAM!")
+                    self.used_gpu_vram_gb = info.used / self.gb_convertion
+                    
+                cv2_tensor = cv2_tensor.permute(2, 0, 1)
+                images.append(cv2_tensor)
+
                 this_count+=1
             N_time = len(images_path)
 
-                #     video_data_save[count] = img.permute(1,2,0)
-                #     count += 1
+        handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0) # repeating ?
+        info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+
+        nvidia_smi.nvmlShutdown()
+        print(f"\nData Loading Done with First Image of 'images' {images[0].shape} Image Shape. \nConsumed Time {time.time() - st} Seconds")
+
         return images, image_paths, image_poses, image_times, N_cams, N_time
     
     def __len__(self):
         return len(self.image_paths)
     
-    def __getitem__(self,index):
-        return self.images[index], self.image_poses[index], self.image_times[index]
-    # def __getitem__(self,index):
-        # img = Image.open(self.image_paths[index])
-        # img = img.resize(self.img_wh, Image.LANCZOS)
-        # img = self.transform(img)
-        # return img, self.image_poses[index], self.image_times[index]
-
+    def __getitem__(self, index):
+        if self.load_all_data_to_gpu:
+            return self.images[index], self.image_poses[index], self.image_times[index]
+        
+        if self.load_on_cpu:
+            return self.images[index].to("cpu"), self.image_poses[index], self.image_times[index]
+        else:
+            return self.images[index].to("cuda"), self.image_poses[index], self.image_times[index]
+        
     def load_pose(self,index):
         return self.image_poses[index]
 

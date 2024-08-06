@@ -173,8 +173,10 @@ parser.add_argument("--skip_video", action="store_true")
 parser.add_argument("--configs1", type=str, default="arguments/dynerf_9/flame_salmon_1.py")
 parser.add_argument("--configs2", type=str, default="arguments/dnerf_tv_2/hellwarrior.py")
 parser.add_argument("--modelpath2", type=str, default="output/dnerf_tv_2/hellwarrior")
-parser.add_argument("--configs3", type=str, default="arguments/dnerf_tv_2/mutant.py")
-parser.add_argument("--modelpath3", type=str, default="output/dnerf_tv_2/mutant")
+# parser.add_argument("--configs3", type=str, default="arguments/dnerf_tv_2/mutant.py")
+# parser.add_argument("--modelpath3", type=str, default="output/dnerf_tv_2/mutant")
+parser.add_argument("--configs3", action="store_true")
+parser.add_argument("--modelpath3", action="store_true")
 render_path = "output/editing_render_flame_salmon"
 
 args = get_combined_args(parser)

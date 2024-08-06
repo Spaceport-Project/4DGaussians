@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 import numpy as np
+import gc
 import random
 import os, sys
 import torch
@@ -16,6 +17,7 @@ from random import randint
 from utils.loss_utils import l1_loss, ssim, l2_loss, lpips_loss
 from gaussian_renderer import render, network_gui
 import sys
+from statistics import mean
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
@@ -28,8 +30,10 @@ from utils.timer import Timer
 from utils.loader_utils import FineSampler, get_stamp_list
 import lpips
 from utils.scene_utils import render_training_image
-from time import time
+# from time import time
 import copy
+import time
+import nvidia_smi
 
 to8b = lambda x : (255*np.clip(x.cpu().numpy(),0,1)).astype(np.uint8)
 
@@ -45,6 +49,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         first_iter = 0
     else:
         first_iter = scene.loaded_iter
+    EPOCH = 1
 
     gaussians.training_setup(opt)
     if checkpoint:
@@ -72,21 +77,32 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     
     progress_bar = tqdm(range(first_iter, final_iter), desc="Training progress")
     first_iter += 1
-    # lpips_model = lpips.LPIPS(net="alex").cuda()
+    lpips_model = lpips.LPIPS(net="alex").cuda()
+    # lpips_model = lpips.LPIPS(net="vgg").cuda()
     video_cams = scene.getVideoCameras()
     test_cams = scene.getTestCameras()
-    train_cams = scene.getTrainCameras()
+    # train_cams = scene.getTrainCameras()
+    # train_cams = scene.getTrainCameras()
 
+    # if not viewpoint_stack and not opt.dataloader:
+    #     # dnerf's branch
+    #     viewpoint_stack = [i for i in train_cams]
+    #     temp_list = copy.deepcopy(viewpoint_stack)
 
-    if not viewpoint_stack and not opt.dataloader:
-        # dnerf's branch
-        viewpoint_stack = [i for i in train_cams]
-        temp_list = copy.deepcopy(viewpoint_stack)
-    # 
     batch_size = opt.batch_size
-    print("data loading done")
+    fourdgs_subsets_list = scene.getSubsetsForTraining()
+    fourdgs_subsets_generator = (item for item in fourdgs_subsets_list)
+    # print("data loading done")
     if opt.dataloader:
-        viewpoint_stack = scene.getTrainCameras()
+        # print("Dataloader")
+         # subsetleri içeren liste
+        # print("fourdgs_subsets_list -> ", fourdgs_subsets_list)
+         # subsetleri içeren generator
+        viewpoint_stack = next(fourdgs_subsets_generator) # generatorden ilk item (4dgs dataset) alınıyor
+        # print("ViewpointStack Type->", type(viewpoint_stack)) # 4DGS dataset
+        viewpoint_stack.dataset.unload_gpu()
+        viewpoint_stack.dataset.load_to_gpu() # neural dataset loading to gpu
+        
         if opt.custom_sampler is not None:
             sampler = FineSampler(viewpoint_stack)
             viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,sampler=sampler,num_workers=0,collate_fn=list)
@@ -95,8 +111,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,shuffle=True,num_workers=0,collate_fn=list)
             random_loader = True
         loader = iter(viewpoint_stack_loader)
-    
-    
+
     # dynerf, zerostamp_init
     # breakpoint()
     if stage == "coarse" and opt.zerostamp_init:
@@ -106,7 +121,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         viewpoint_stack = temp_list.copy()
     else:
         load_in_memory = False 
-                            # 
+                            
     count = 0
     for iteration in range(first_iter, final_iter+1):        
         if network_gui.conn == None:
@@ -135,7 +150,6 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             except Exception as e:
                 print(e)
                 network_gui.conn = None
-
         iter_start.record()
 
         gaussians.update_learning_rate(iteration)
@@ -148,22 +162,31 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
         # dynerf's branch
         if opt.dataloader and not load_in_memory:
-            # try:
-            viewpoint_cams = next(loader)
-            # except StopIteration:
-            # except Exception as e:
-            print("reset dataloader into random dataloader. -> ")
-            if not random_loader:
-                viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=opt.batch_size,shuffle=True,num_workers=0,collate_fn=list)
-                random_loader = True
-            loader = iter(viewpoint_stack_loader)
+            try:
+                viewpoint_cams = next(loader) # ilk subset üzerinde iteration. Scene objesi dönmesi lazım
+            except StopIteration:
 
-        else:
+                try:
+                    st_unload_gpu = time.time()
+                    viewpoint_stack.dataset.unload_gpu()
+                    viewpoint_stack = next(fourdgs_subsets_generator)
+                    st = time.time()
+                    viewpoint_stack.dataset.load_to_gpu()
+                    viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,shuffle=True,num_workers=0,collate_fn=list)
+                    loader = iter(viewpoint_stack_loader)
+                except StopIteration:
+                    viewpoint_stack.dataset.unload_gpu()
+                    fourdgs_subsets_generator = (item for item in fourdgs_subsets_list)
+                    viewpoint_stack = next(fourdgs_subsets_generator)
+                    viewpoint_stack.dataset.load_to_gpu()
+                    viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,shuffle=True,num_workers=0,collate_fn=list)
+                    loader = iter(viewpoint_stack_loader)
+                    EPOCH += 1
+        else:       
             idx = 0
             viewpoint_cams = []
 
             while idx < batch_size :    
-                    
                 viewpoint_cam = viewpoint_stack.pop(randint(0,len(viewpoint_stack)-1))
                 if not viewpoint_stack :
                     viewpoint_stack =  temp_list.copy()
@@ -195,31 +218,32 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             visibility_filter_list.append(visibility_filter.unsqueeze(0))
             viewspace_point_tensor_list.append(viewspace_point_tensor)
         
-
         radii = torch.cat(radii_list,0).max(dim=0).values
         visibility_filter = torch.cat(visibility_filter_list).any(dim=0)
         image_tensor = torch.cat(images,0)
         gt_image_tensor = torch.cat(gt_images,0)
         # Loss
         # breakpoint()
-        Ll1 = l1_loss(image_tensor, gt_image_tensor[:,:3,:,:])
+
+        if args.loss == "l1":
+            Ll1 = l1_loss(image_tensor, gt_image_tensor[:,:3,:,:])
+        if args.loss == "l2":
+            Ll1 = l2_loss(image_tensor, gt_image_tensor[:,:3,:,:]) # For L2 LOSS USAGE !!, first uncomment
 
         psnr_ = psnr(image_tensor, gt_image_tensor).mean().double()
         # norm
-        
 
         loss = Ll1
         if stage == "fine" and hyper.time_smoothness_weight != 0:
             # tv_loss = 0
-            tv_loss = gaussians.compute_regulation(hyper.time_smoothness_weight, hyper.l1_time_planes, hyper.plane_tv_weight)
+            tv_loss = gaussians.compute_regulation(hyper.time_smoothness_weight, hyper.l1_time_planes, hyper.plane_tv_weight) # bu kısımda patlıyor
             loss += tv_loss
         if opt.lambda_dssim != 0:
             ssim_loss = ssim(image_tensor,gt_image_tensor)
             loss += opt.lambda_dssim * (1.0-ssim_loss)
-        # if opt.lambda_lpips !=0:
-        #     lpipsloss = lpips_loss(image_tensor,gt_image_tensor,lpips_model)
-        #     loss += opt.lambda_lpips * lpipsloss
-        
+        if opt.lambda_lpips !=0:
+            lpipsloss = lpips_loss(image_tensor,gt_image_tensor,lpips_model)
+            loss += opt.lambda_lpips * lpipsloss
         loss.backward()
         if torch.isnan(loss).any():
             print("loss is nan,end training, reexecv program now.")
@@ -235,13 +259,13 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             ema_psnr_for_log = 0.4 * psnr_ + 0.6 * ema_psnr_for_log
             total_point = gaussians._xyz.shape[0]
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}",
+                progress_bar.set_postfix({"Epoch":f"{EPOCH}",
+                                          "Loss": f"{ema_loss_for_log:.{7}f}",
                                           "psnr": f"{psnr_:.{2}f}",
                                           "point":f"{total_point}"})
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
-
             # Log and save
             timer.pause()
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, [pipe, background], stage, scene.dataset_type)
@@ -287,9 +311,6 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 if iteration % opt.opacity_reset_interval == 0:
                     print("reset opacity")
                     gaussians.reset_opacity()
-                    
-            
-
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
@@ -302,13 +323,50 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     # first_iter = 0
     tb_writer = prepare_output_and_logger(expname)
     gaussians = GaussianModel(dataset.sh_degree, hyper)
+    # torch.save(gaussians.state_dict(), "./gaussians.pt")
+    # print("Gaussian model saving..")
+
     dataset.model_path = args.model_path
     timer = Timer()
     scene = Scene(dataset, gaussians, load_coarse=None, load_iteration=-1)
+    # torch.save(scene.state_dict(), "./scene.pt")
+    # print("Scene model saving..")
     timer.start()
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                              checkpoint_iterations, checkpoint, debug_from,
                              gaussians, scene, "coarse", tb_writer, opt.coarse_iterations,timer)
+    
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    nvidia_smi.nvmlInit()
+    handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
+    info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+    
+    used_gpu_vram_gb = info.used / (1024 * 1024)
+    print(f"After Coarse Training Used VRAM is {used_gpu_vram_gb} GB")
+    nvidia_smi.nvmlShutdown()
+
+    fourdgs_subsets_list = scene.getSubsetsForTraining() # subsetleri içeren liste
+    # print("fourdgs_subsets_list -> ", fourdgs_subsets_list)
+    fourdgs_subsets_generator = (item for item in fourdgs_subsets_list) # subsetleri içeren generator
+
+    viewpoint_stack = next(fourdgs_subsets_generator) # generatorden ilk item (4dgs dataset) alınıyor
+    # print("ViewpointStack Type->", type(viewpoint_stack)) # 4DGS dataset
+    viewpoint_stack.dataset.unload_gpu()
+
+    for subset in fourdgs_subsets_generator:
+        print("offloading all GPU's")
+        subset.dataset.unload_gpu()
+        
+    nvidia_smi.nvmlInit()
+    handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
+    info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+    
+    used_gpu_vram_gb = info.used / (1024 * 1024)
+    print(f"After offloading all subsets on stage == fine using VRAM is {used_gpu_vram_gb} GB")
+    nvidia_smi.nvmlShutdown()
+
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                          checkpoint_iterations, checkpoint, debug_from,
                          gaussians, scene, "fine", tb_writer, opt.iterations,timer)
@@ -319,6 +377,7 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     # scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
     #                      checkpoint_iterations, checkpoint, debug_from,
     #                      gaussians, scene, "fine", tb_writer, opt.iterations,timer)
+    return psnr_test_list_coarse, psnr_test_list_fine, ssim_test_list_fine
 
 def prepare_output_and_logger(expname):    
     if not args.model_path:
@@ -335,6 +394,20 @@ def prepare_output_and_logger(expname):
     with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
         cfg_log_f.write(str(Namespace(**vars(args))))
 
+    script_name = sys.argv[0] # train.py, optuna_optimization.py etc.
+    if script_name == "train.py":
+        # external execution like optuna_optimization.pydoes not enter this area.
+        # copying config file to fast render
+        import shutil
+        
+        source = os.path.join(os.getcwd(), args.configs) # /home/alper/Spaceport/arguments/...
+        destination = os.path.join(os.path.join(os.getcwd(), args.model_path), "config.py") # /home/alper/Spaceport/output/test_output/config.py
+        try:
+            shutil.copy(source, destination)
+            print(f"Config file copied from {source} to {destination}")
+        except Exception as e:
+            print("Cannot copy args file to output -> ", e)
+
     # Create Tensorboard writer
     tb_writer = None
     if TENSORBOARD_FOUND:
@@ -349,18 +422,18 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         tb_writer.add_scalar(f'{stage}/train_loss_patchestotal_loss', loss.item(), iteration)
         tb_writer.add_scalar(f'{stage}/iter_time', elapsed, iteration)
         
-    
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        # 
-        validation_configs = ({'name': 'test', 'cameras' : [scene.getTestCameras()[idx % len(scene.getTestCameras())] for idx in range(10, 5000, 299)]},
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(10, 5000, 299)]})
+        # validation_configs = ({'name': 'test', 'cameras' : [scene.getTestCameras()[idx % len(scene.getTestCameras())] for idx in range(10, 5000, 299)]},
+        #                       {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(10, 5000, 299)]})
+        validation_configs = scene.getValidationConfigs()
 
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:
                 l1_test = 0.0
                 psnr_test = 0.0
+                ssim_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
                     image = torch.clamp(renderFunc(viewpoint, scene.gaussians,stage=stage, cam_type=dataset_type, *renderArgs)["render"], 0.0, 1.0)
                     if dataset_type == "PanopticSports":
@@ -374,17 +447,34 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                                 tb_writer.add_images(stage + "/"+config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                     except:
                         pass
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    # mask=viewpoint.mask
                     
+                    if args.loss == "l1":
+                        l1_test += l1_loss(image, gt_image).mean().double()
+                    if args.loss == "l2":
+                        l1_test += l2_loss(image, gt_image).mean().double() # For L2 LOSS USAGE !!, second uncomment
+                    # mask=viewpoint.mask
+
+                    ssim_test += ssim(image,gt_image).item()
+
                     psnr_test += psnr(image, gt_image, mask=None).mean().double()
+
                 psnr_test /= len(config['cameras'])
+                ssim_test /= len(config['cameras'])
+                
+                if stage == "coarse":
+                    psnr_test_list_coarse.append(psnr_test.item()) # for optuna param optimization. Appended value example -> 26.422
+
+                if stage == "fine":
+                    psnr_test_list_fine.append(psnr_test.item())
+                    ssim_test_list_fine.append(ssim_test)
+
                 l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 # print("sh feature",scene.gaussians.get_features.shape)
                 if tb_writer:
                     tb_writer.add_scalar(stage + "/"+config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(stage+"/"+config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+                    tb_writer.add_scalar(stage+"/"+config['name'] + '/loss_viewpoint - ssim', ssim_test, iteration)
 
         if tb_writer:
             tb_writer.add_histogram(f"{stage}/scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
@@ -400,9 +490,58 @@ def setup_seed(seed):
      np.random.seed(seed)
      random.seed(seed)
      torch.backends.cudnn.deterministic = True
+
+def get_params() -> Namespace:
+    # for external using with Optuna
+    parser = ArgumentParser(description="Training script parameters")
+    global psnr_test_list_coarse
+    global psnr_test_list_fine
+    global ssim_test_list_fine
+    psnr_test_list_coarse = list()
+    psnr_test_list_fine = list()
+    ssim_test_list_fine = list()
+
+    setup_seed(6666)
+    lp = ModelParams(parser)
+    op = OptimizationParams(parser)
+    pp = PipelineParams(parser)
+    hp = ModelHiddenParams(parser)
+    parser.add_argument('--ip', type=str, default="127.0.0.1")
+    parser.add_argument('--port', type=int, default=6009)
+    parser.add_argument('--debug_from', type=int, default=-1)
+    parser.add_argument('--detect_anomaly', action='store_true', default=False)
+
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[500*i for i in range(100)])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1000, 3000, 4000, 5000, 6000, 7_000, 9000, 10000, 12000, 14000, 16000, 20000, 25000, 30_000, 45000, 60000])
+
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--expname", type=str, default = "")
+    parser.add_argument("--configs", type=str, default = "arguments/dynerf/default.py")
+    parser.add_argument("--render", action="store_true")
+    
+    global args
+    args = parser.parse_args(sys.argv[1:])
+    args.save_iterations.append(args.iterations)
+    if args.configs:
+        import mmcv
+        from utils.params_utils import merge_hparams
+        config = mmcv.Config.fromfile(args.configs)
+        args = merge_hparams(args, config)
+    
+    return args, lp, op, pp, hp
+
 if __name__ == "__main__":
     # Set up command line argument parser
     # torch.set_default_tensor_type('torch.FloatTensor')
+    global psnr_test_list_coarse
+    global psnr_test_list_fine
+    global ssim_test_list_fine
+    psnr_test_list_coarse = list()
+    psnr_test_list_fine = list()
+    ssim_test_list_fine = list()
+
     torch.cuda.empty_cache()
     parser = ArgumentParser(description="Training script parameters")
     setup_seed(6666)
@@ -422,7 +561,8 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument("--expname", type=str, default = "")
-    parser.add_argument("--configs", type=str, default = "")
+    parser.add_argument("--configs", type=str, default = "arguments/dynerf/default.py")
+    parser.add_argument("--render", action="store_true")
     
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
@@ -439,7 +579,19 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), hp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
+    _, psnr_test_list_fine, ssim_test = training(lp.extract(args), hp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
+
+    print("Fine PSNR List Last Five Item Mean (From train.py) -> ", mean(psnr_test_list_fine[-5:]))
+    print("Fine SSIM List Last Five Item Mean (From train.py) -> ", mean(ssim_test[-5:]))
+    
+    if args.render:
+        try:
+            print("\nRender after training..")
+            from render import safe_state, render_sets
+            safe_state(args.quiet)
+            render_sets(lp.extract(args), hp.extract(args), -1, pp.extract(args), skip_train=True, skip_test=False, skip_video=False)
+        except Exception as e:
+            print("Render Does not work due to -> ", e)
 
     # All done
     print("\nTraining complete.")

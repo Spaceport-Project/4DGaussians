@@ -16,12 +16,14 @@ from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
 from scene.dataset import FourDGSdataset
+from scene.cameras import Camera
+
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 from torch.utils.data import Dataset
 from scene.dataset_readers import add_points
-class Scene:
 
+class Scene:
     gaussians : GaussianModel
 
     def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], load_coarse=False):
@@ -39,9 +41,13 @@ class Scene:
                 self.loaded_iter = load_iteration
             print("Loading trained model at iteration {}".format(self.loaded_iter))
 
-        self.train_cameras = {}
+        # self.train_cameras = {}
+        self.validation_configs = None
+        self.train_camera = list()
         self.test_cameras = {}
         self.video_cameras = {}
+        # self.original_indices = list()
+
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, args.llffhold)
             dataset_type="colmap"
@@ -50,7 +56,7 @@ class Scene:
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval, args.extension)
             dataset_type="blender"
         elif os.path.exists(os.path.join(args.source_path, "poses_bounds.npy")):
-            scene_info = sceneLoadTypeCallbacks["dynerf"](args.source_path, args.white_background, args.eval)
+            scene_info = sceneLoadTypeCallbacks["dynerf"](args.source_path, args.white_background, args.eval, args.load_all_data_to_gpu)
             dataset_type="dynerf"
         elif os.path.exists(os.path.join(args.source_path,"dataset.json")):
             scene_info = sceneLoadTypeCallbacks["nerfies"](args.source_path, False, args.eval)
@@ -63,16 +69,39 @@ class Scene:
             dataset_type="MultipleView"
         else:
             assert False, "Could not recognize scene type!"
+        
         self.maxtime = scene_info.maxtime
         self.dataset_type = dataset_type
         self.cameras_extent = scene_info.nerf_normalization["radius"]
-        print("Loading Training Cameras")
-        self.train_camera = FourDGSdataset(scene_info.train_cameras, args, dataset_type)
-        print("Loading Test Cameras")
-        self.test_camera = FourDGSdataset(scene_info.test_cameras, args, dataset_type)
-        print("Loading Video Cameras")
-        self.video_camera = FourDGSdataset(scene_info.video_cameras, args, dataset_type)
+        # self.original_indices = scene_info.original_indices
 
+        # subset_images = []
+        # for original_index in self.original_indices:
+        #     subset_index = original_index // 69
+        #     local_index = original_index % 69
+            
+        #     if subset_index < len(scene_info.train_cameras):
+        #         subset = scene_info.train_cameras[subset_index]
+        #         if local_index < len(subset):
+        #             subset_images.append(subset[local_index])
+        
+        # self.train_camera = FourDGSdataset(scene_info.train_cameras, args, dataset_type)
+        
+        for index, subset in enumerate(scene_info.train_cameras):
+            print(f"Subset {index} len on 4DGS Dataset Creation -> {len(subset)}")
+            self.train_camera.append(FourDGSdataset(subset, args, dataset_type))
+
+        self.validation_dataset = FourDGSdataset(scene_info.val_subset, args, dataset_type)
+        self.test_camera = FourDGSdataset(scene_info.test_cameras, args, dataset_type)
+        self.video_camera = FourDGSdataset(scene_info.video_cameras, args, dataset_type)
+        
+        validation_dataset = [self.validation_dataset[i] for i in range(len(self.validation_dataset))]
+        print("val dataset len ->", len(validation_dataset))
+
+        # validation_configs_train = {'name': 'train', 'cameras' : subset_images}
+        self.validation_configs = ({'name': 'test', 'cameras' : [self.test_camera[idx % len(self.test_camera)] for idx in range(10, 5000, 299)]},
+                                   {'name': 'train', 'cameras' : [self.train_camera[idx % len(self.train_camera)] for idx in range(10, 5000, 299)]})
+        
         # self.video_camera = cameraList_from_camInfos(scene_info.video_cameras,-1,args)
         xyz_max = scene_info.point_cloud.points.max(axis=0)
         xyz_min = scene_info.point_cloud.points.min(axis=0)
@@ -101,9 +130,13 @@ class Scene:
             point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
         self.gaussians.save_deformation(point_cloud_path)
-    def getTrainCameras(self, scale=1.0):
-        return self.train_camera
 
+    def getSubsetsForTraining(self):
+        return self.train_camera
+    def getValidationConfigs(self):
+        return self.validation_configs
+    def getTrainCameras(self, scale=1.0):
+        return NotImplementedError
     def getTestCameras(self, scale=1.0):
         return self.test_camera
     def getVideoCameras(self, scale=1.0):

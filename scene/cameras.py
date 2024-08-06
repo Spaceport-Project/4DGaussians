@@ -74,8 +74,6 @@ class Camera(nn.Module):
 
         # --------------------------- Equirec Repo Implementation ---------------------------
 
-
-
         # --------------------------- Master Repo Codes ---------------------------
         # self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1)
         # # .cuda()

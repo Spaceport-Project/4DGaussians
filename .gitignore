@@ -9,4 +9,11 @@ screenshots
 data/
 video_player/media/**
 submodules/
-
+*.sqlite3
+viewers/
+data_process/
+basler_camera_process/data
+basler_camera_process/output
+basler_camera_process/test
+basler_camera_process/YOLOX_outputs
+improc/YOLOX_outputs
